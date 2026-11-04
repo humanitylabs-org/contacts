@@ -52,7 +52,7 @@ let all = [], query = '';
 
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 function say(text, kind = '') { const s = $('status'); s.classList.toggle('wz-sr', !kind); s.classList.toggle('error', kind === 'error'); s.textContent = text; if (kind) setTimeout(() => { if (s.textContent === text) say(''); }, 5000); }
-function toast(text) { if (window.WizardApp?.toast) WizardApp.toast(text); else say(text, 'note'); }
+function toast(text) { let shown = false; try { shown = !!window.WizardApp?.shell?.toast?.('✓', text); } catch (e) { /* standalone */ } if (!shown) say(text, 'note'); }
 async function api(path, body) {
   const init = body === undefined ? {} : {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)};
   const r = await fetch(path, init);
@@ -89,13 +89,14 @@ function render() {
   for (const [k, people] of [...groups].sort((a, b) => (a[0] === '#') - (b[0] === '#') || a[0].localeCompare(b[0]))) section(k, people);
 }
 function row(p) {
-  const li = el('li'), b = el('button', 'wz-row ct-row'); b.type = 'button';
+  const li = el('li'), b = el('button', 'wz-row ct-row'); b.type = 'button'; b.dataset.id = p.id;
   const main = el('span', 'wz-main'); main.append(el('b', '', p.name));
   const sub = subtitle(p); if (sub) main.append(el('small', '', sub));
   b.append(face(p), main);
   if (p.favorite) b.append(el('span', 'ct-star', '★'));
   b.setAttribute('aria-label', p.name + (sub ? ', ' + sub : ''));
   b.onclick = () => openContact(p.id);
+  if (p.id === shownId && !$('pane').hidden) b.setAttribute('aria-current', 'true');
   li.append(b); return li;
 }
 
@@ -103,12 +104,39 @@ async function load() {
   try { all = (await api('api/contacts?q=' + encodeURIComponent(query))).contacts; render(); }
   catch (e) { say(e.message, 'error'); }
 }
+// After adding someone: bring their row into view and mark it briefly, so the owner sees where they landed.
+function showRow(id) {
+  if (!id) return;
+  const r = document.querySelector('.ct-row[data-id="' + CSS.escape(id) + '"]'); if (!r) return;
+  r.scrollIntoView({block: 'center'}); r.classList.add('ct-new'); setTimeout(() => r.classList.remove('ct-new'), 2400);
+}
 let timer; $('q').addEventListener('input', e => { query = e.target.value; clearTimeout(timer); timer = setTimeout(load, 120); });
 
 // ---- One contact ----
+// Wide windows show the person beside the list (the list stays one tap away); narrow ones slide a sheet over it.
+const WIDE = matchMedia('(min-width: 680px)');
+let shownId = null, paneBack = null;
+const usePane = () => WIDE.matches;
+function closeView() {
+  if ($('view').open) $('view').close();
+  if (!$('pane').hidden) { $('pane').hidden = true; $('pane').replaceChildren(); document.querySelector('.ct-body').classList.remove('has-pane'); }
+  if (paneBack) { paneBack.release(); paneBack = null; }
+  for (const r of document.querySelectorAll('.ct-row[aria-current]')) r.removeAttribute('aria-current');
+  shownId = null;
+}
+function markRow(id) {
+  for (const r of document.querySelectorAll('.ct-row[aria-current]')) r.removeAttribute('aria-current');
+  const r = document.querySelector('.ct-row[data-id="' + CSS.escape(id) + '"]'); if (r) r.setAttribute('aria-current', 'true');
+}
+// Edit, Share and Merge open over the person; Back or × returns to them. Closing the person forgets them.
+$('view').addEventListener('close', () => { if ($('pane').hidden) shownId = null; });
+WIDE.addEventListener('change', () => { const id = shownId; if (id) { closeView(); openContact(id); } });
 async function openContact(id) {
   let p; try { p = (await api('api/contacts/' + id)).contact; } catch (e) { say(e.message, 'error'); return; }
-  const d = $('view'); d.replaceChildren();
+  const pane = usePane();
+  if (!pane && !$('pane').hidden) closeView();
+  const d = pane ? $('pane') : $('view'); d.replaceChildren();
+  if (pane) { const x = el('button', 'wz-sheet-x ct-pane-x', '×'); x.type = 'button'; x.setAttribute('aria-label', 'Close'); x.onclick = closeView; d.append(x); }
   const top = el('div', 'ct-top'); top.append(face(p, 'big'));
   const name = el('h2', '', p.name); name.id = 'view-name'; top.append(name);
   const sub = [p.nickname && '“' + p.nickname + '”', [p.title, p.company].filter(Boolean).join(', ')].filter(Boolean).join(' · ');
@@ -118,7 +146,7 @@ async function openContact(id) {
   const act = (label, href) => { const a = el('a', 'ct-act', label); a.href = href; a.target = '_blank'; a.rel = 'noopener'; acts.append(a); };
   if (p.phones[0]) { act('Call', 'tel:' + p.phones[0].value); act('Text', 'sms:' + p.phones[0].value); }
   if (p.emails[0]) act('Email', 'mailto:' + p.emails[0].value);
-  const fav = el('button', 'ct-act' + (p.favorite ? ' on' : ''), p.favorite ? '★ Favourite' : '☆ Favourite'); fav.type = 'button';
+  const fav = el('button', 'ct-act' + (p.favorite ? ' on' : ''), p.favorite ? '★ Favourite' : '☆ Favourite'); fav.type = 'button'; fav.setAttribute('aria-pressed', String(!!p.favorite));
   fav.onclick = async () => { try { await api('api/contacts/' + p.id, {favorite: !p.favorite}); await load(); openContact(p.id); } catch (e) { say(e.message, 'error'); } };
   acts.append(fav); d.append(acts);
   const card = el('div', 'ct-card');
@@ -130,12 +158,17 @@ async function openContact(id) {
   if (p.notes) { const n = el('div', 'ct-line notes'); n.append(el('small', '', 'Notes'), el('span', '', p.notes)); card.append(n); }
   if (card.children.length) d.append(card);
   const bar = el('div', 'ct-bar');
-  const edit = el('button', 'wz-button', 'Edit'); edit.type = 'button'; edit.onclick = () => { d.close(); editContact(p); };
-  const merge = el('button', 'wz-button secondary', 'Merge…'); merge.type = 'button'; merge.onclick = () => { d.close(); pickMerge(p); };
-  const share = el('button', 'wz-button secondary', 'Share'); share.type = 'button'; share.onclick = () => { d.close(); shareCard(p, false); };
+  const edit = el('button', 'wz-button', 'Edit'); edit.type = 'button'; edit.onclick = () => editContact(p);
+  const merge = el('button', 'wz-button secondary', 'Merge…'); merge.type = 'button'; merge.onclick = () => pickMerge(p);
+  const share = el('button', 'wz-button secondary', 'Share'); share.type = 'button'; share.onclick = () => shareCard(p, false);
   bar.append(edit, share, merge); d.append(bar);
-  WzSheet.open(d);
+  shownId = p.id;
+  if (pane) {
+    d.hidden = false; d.scrollTop = 0; document.querySelector('.ct-body').classList.add('has-pane'); markRow(p.id);
+    if (!paneBack && window.WizardApp?.back?.push) { try { paneBack = WizardApp.back.push(() => { closeView(); return true; }); } catch (e) { /* standalone */ } }
+  } else WzSheet.open(d);
 }
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('pane').hidden && !document.querySelector('dialog[open]')) closeView(); });
 
 // ---- Share a card as QR codes: the whole card (adds to any phone's contacts) or one network's link ----
 function shareCard(p, mine) {
@@ -223,13 +256,13 @@ function editContact(p) {
     const del = el('button', 'wz-button secondary danger', 'Delete'); del.type = 'button'; let armed = false;
     del.onclick = async () => {
       if (!armed) { armed = true; del.textContent = 'Tap again to delete'; setTimeout(() => { armed = false; del.textContent = 'Delete'; }, 3000); return; }
-      try { await api('api/contacts/' + p.id + '/delete', {}); d.close(); await load(); toast(p.name + ' deleted'); } catch (e) { err.textContent = e.message; }
+      try { await api('api/contacts/' + p.id + '/delete', {}); d.close(); if (shownId === p.id) closeView(); await load(); toast(p.name + ' deleted'); } catch (e) { err.textContent = e.message; }
     };
     bar.append(del);
   }
   if (!fresh) {
     const pic = el('button', 'wz-button secondary', p.photo ? 'Change photo' : 'Add photo'); pic.type = 'button';
-    pic.onclick = () => choosePhoto(p.id, () => { d.close(); load().then(() => openContact(p.id)); });
+    pic.onclick = () => choosePhoto(p.id, () => { d.close(); load().then(() => openContact(p.id)); toast('Photo saved'); });
     bar.append(pic);
   }
   form.append(bar);
@@ -244,8 +277,8 @@ function editContact(p) {
     save.disabled = true;
     try {
       const r = fresh ? await api('api/contacts', body) : await api('api/contacts/' + p.id, body);
-      d.close(); await load(); toast(fresh ? 'Contact added' : 'Saved');
-      if (fresh) openContact(r.contact.id);
+      d.close(); await load(); toast(fresh ? (r.contact?.name || body.name) + ' added' : 'Saved');
+      if (fresh) showRow(r.contact?.id); else if (shownId === p.id) openContact(p.id);
     } catch (x) { err.textContent = x.message; }
     finally { save.disabled = false; }
   };
@@ -372,7 +405,7 @@ async function phoneSync() {
 if (!window.WizardApp || WizardApp.version !== 1) {
   say('Wizard system functions are unavailable. Open Contacts through Wizard.', 'error');
 } else {
-  WizardApp.ready({name: 'contacts', version: '0.3.0'});
+  WizardApp.ready({name: 'contacts', version: '0.4.0'});
   WizardApp.back.register({canGoBack: () => false, back: () => false});
 }
 load();
