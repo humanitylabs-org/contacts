@@ -86,3 +86,42 @@ html[data-color-scheme=light]:not(.wz-hosted) .wz-sheet { background: var(--canv
 .ct-add-link { display:grid; gap:10px; }
 .ct-note { margin-top: 12px; text-align: center; }
 .ct-bar a.wz-button { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+
+/* 0.4.0 Friendly + mobile pass.
+   Narrow windows: search, More and New sit in a bottom bar under the thumb (the A-Z list still reads from the top).
+   Wide windows: a person opens beside the list (list ~360px), so the list is always one tap away. */
+[hidden] { display: none !important; }
+#more svg { stroke-width: 3.4; }
+.ct-body { flex: 1; min-height: 0; display: flex; }
+.ct-body > .wz-scroll { flex: 1; min-width: 0; }
+.ct-pane { flex: 1; min-width: 0; overflow-y: auto; padding: var(--wz-space-4, 16px) var(--wz-gutter, 20px) 24px; border-left: 1px solid var(--line); scrollbar-width: thin; }
+.ct-pane .ct-pane-x { position: sticky; top: 0; float: right; }
+.ct-body.has-pane > .wz-scroll { flex: 0 0 360px; }
+.ct-body.has-pane .ct-list { columns: auto; }
+.ct-row[aria-current="true"] { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.ct-row.ct-new { background: color-mix(in srgb, var(--accent) 22%, transparent); transition: background 600ms; }
+@container wz-app (max-width: 599px) {
+  .ct-controls { order: 3; padding: 8px 10px 10px; border-top: 1px solid var(--line); }
+  .ct-body { order: 2; }
+  #status { order: 4; }
+}
+/* Wizard full screen and plain tabs reach the glass bottom; a Wizard window already clears the dock. */
+@container wz-app (max-width: 599px) {
+  html[data-presentation="immersive"] .ct-controls, html[data-presentation="standalone"] .ct-controls { padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
+}
+.ct-controls .ct-icon { width: 44px; height: 44px; flex: none; }
+/* The form never grows wider than the sheet (fieldsets default to min-content width). */
+.ct-form { grid-template-columns: minmax(0, 1fr); }
+.ct-multi { min-inline-size: 0; grid-template-columns: minmax(0, 1fr); }
+.ct-link { text-align: left; }
+/* Long forms keep Save in reach: the action bar sticks to the bottom of the sheet. */
+.ct-form > .ct-bar { position: sticky; bottom: calc(-1 * (var(--wz-space-4, 16px) + env(safe-area-inset-bottom, 0px))); z-index: 1; margin: 4px calc(-1 * var(--wz-space-4, 16px)) calc(-1 * (var(--wz-space-4, 16px) + env(safe-area-inset-bottom, 0px)));
+  padding: 10px var(--wz-space-4, 16px) calc(var(--wz-space-4, 16px) + env(safe-area-inset-bottom, 0px)); background: var(--wz-panel, color-mix(in srgb, var(--wz-text) 10%, var(--wz-base))); border-top: 1px solid var(--line); }
+/* Thumb targets: 44px on touch screens, compact with a mouse. */
+@media (pointer: coarse) {
+  .ct-act, .ct-bar .wz-button, .ct-dup .wz-button { min-height: 44px; }
+  .ct-field .wz-input, .ct-multi .wz-input { height: 44px; }
+  .ct-x { width: 44px; height: 44px; }
+  .ct-link { min-height: 44px; }
+  .ct-chip { min-height: 44px; }
+}
