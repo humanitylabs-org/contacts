@@ -14,6 +14,7 @@ import secrets
 import sqlite3
 import time
 import unicodedata
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlsplit
@@ -22,7 +23,7 @@ from xml.sax.saxutils import escape as xml_escape
 ROOT = Path(__file__).resolve().parent.parent if '__file__' in globals() else Path(os.environ.get('APP_ROOT', '.')).resolve()
 DATA = Path(os.environ.get('DATA_DIR', ROOT / '.data'))
 APP_ID = 'contacts'
-VERSION = '0.4.1'
+VERSION = '0.4.2'
 STATIC_TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml'}
 NETWORK = re.compile(r'[a-z][a-z0-9_-]{0,30}')
 PHOTO_MAX = 400 * 1024
@@ -232,7 +233,7 @@ def context(contact_id):
     if p['notes']:
         notes = p['notes'].strip()
         lines.append('Notes: ' + (notes if len(notes) <= 1500 else notes[:1500].rstrip() + '...'))
-    lines.append(f"Last changed: {p['updated']}")
+    lines.append('Last changed: ' + datetime.fromtimestamp(p['updated'] / 1000, timezone.utc).strftime('%Y-%m-%d %H:%M UTC'))
     lines.append(f"Read or change this person with the Contacts tools (contacts_get / contacts_update, id {p['id']}).")
     return {'id': p['id'], 'title': f"Contacts: {p['name']}"[:200], 'message': '\n'.join(lines)[:32000]}
 
