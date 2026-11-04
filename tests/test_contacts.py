@@ -192,6 +192,26 @@ class ContactsTests(unittest.TestCase):
         self.assertIn("__import__('zlib').decompress", compose)
         self.assertLess(len(match[1]), 120000, 'Linux per-argument limit is 128 KiB')
 
+    def test_reply_context_is_a_compact_unsent_draft_payload(self):
+        s = self.s
+        c = s.add_contact({'name': 'Ana Souza', 'nickname': 'Aninha', 'company': 'Acme', 'title': 'CTO', 'birthday': '--05-31',
+                           'phones': [{'value': '+66 81 234 5678', 'label': 'mobile'}], 'emails': ['ana@example.com'],
+                           'accounts': [{'network': 'telegram', 'value': 'anasouza', 'label': ''}], 'notes': 'Met in Lisbon. ' * 200})['contact']
+        ctx = s.context(c['id'])
+        self.assertEqual(set(ctx), {'id', 'title', 'message'})
+        self.assertRegex(ctx['id'], r'^[A-Za-z0-9_-]{1,128}$')
+        self.assertEqual(ctx['id'], c['id'])
+        self.assertEqual(ctx['title'], 'Contacts: Ana Souza')
+        m = ctx['message']
+        for part in ('Contacts person: Ana Souza', c['id'], 'Nickname: Aninha', 'Work: CTO, Acme', 'ana@example.com', 'Telegram: anasouza',
+                     'Birthday: --05-31 (year not known)', 'Met in Lisbon.'):
+            self.assertIn(part, m)
+        self.assertIn('Phone (mobile):', m)
+        self.assertTrue(m.split('Notes: ', 1)[1].split('\n', 1)[0].endswith('...'), 'long notes are truncated')
+        self.assertLess(len(m), 32000)
+        with self.assertRaises(s.Problem):
+            s.context('c_000000000000')
+
     def test_mcp_tools(self):
         s = self.s
         out = s.rpc({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {'name': 'contacts_add', 'arguments': {'name': 'Mia', 'emails': ['mia@x.io']}}})

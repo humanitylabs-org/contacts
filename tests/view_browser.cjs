@@ -2,7 +2,7 @@
 const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const assert = require('node:assert/strict'), path = require('node:path'), fs = require('node:fs');
 const base = process.env.CONTACTS_URL || 'http://127.0.0.1:18822/', out = path.resolve(process.argv[2] || 'shots'); fs.mkdirSync(out, {recursive: true});
-const STUB = 'window.WizardApp = {version: 1, ready() {}, shell: {toast(i, t) { window.__toast = t; return true; }}, update: {hold: () => ({release() {}})}, back: {register() {}, push: () => { window.__backs = (window.__backs || 0) + 1; return {release() { window.__backs--; }}; }}};';
+const STUB = 'window.WizardApp = {version: 1, ready() {}, shell: {toast(i, t) { window.__toast = t; return true; }}, nav: {openContextDraft(x) { window.__draft = x; return {kind: "unsent-draft", sent: false}; }}, update: {hold: () => ({release() {}})}, back: {register() {}, push: () => { window.__backs = (window.__backs || 0) + 1; return {release() { window.__backs--; }}; }}};';
 (async () => {
   const launch = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? {executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH} : {};
   const browser = await chromium.launch(launch), done = [];
@@ -37,6 +37,11 @@ const STUB = 'window.WizardApp = {version: 1, ready() {}, shell: {toast(i, t) { 
       assert.equal(await page.evaluate(() => window.__backs), 1, 'the pane is on the Back stack');
     }
     await page.screenshot({path: path.join(out, `contact-${label}.png`)});
+    await page.waitForTimeout(300);  // Reply context is prefetched with the person
+    await page.locator(view).getByRole('button', {name: 'Reply', exact: true}).click();
+    assert.equal(await page.evaluate(() => window.__draft?.id), await page.locator('.ct-row').first().getAttribute('data-id'), 'Reply drafts this person');
+    assert.match(await page.evaluate(() => window.__draft.message), /Contacts person: Ana Souza/);
+    assert.match(await page.locator('#status').textContent(), /Nothing sent/);
     await page.locator(view).getByRole('button', {name: 'Edit'}).click();
     await page.locator('#edit[open]').waitFor();
     await page.screenshot({path: path.join(out, `edit-${label}.png`)});
@@ -66,5 +71,5 @@ const STUB = 'window.WizardApp = {version: 1, ready() {}, shell: {toast(i, t) { 
     done.push(label); await ctx.close();
   }
   await browser.close();
-  console.log('PASS contacts view: ' + done.join(', ') + ' · list, search, open, edit+readback, add, duplicates menu');
+  console.log('PASS contacts view: ' + done.join(', ') + ' · list, search, open, Reply draft, edit+readback, add, duplicates menu');
 })().catch(e => { console.error('FAIL', e); process.exit(1); });

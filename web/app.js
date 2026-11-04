@@ -115,12 +115,13 @@ let timer; $('q').addEventListener('input', e => { query = e.target.value; clear
 // ---- One contact ----
 // Wide windows show the person beside the list (the list stays one tap away); narrow ones slide a sheet over it.
 const WIDE = matchMedia('(min-width: 680px)');
-let shownId = null, paneBack = null;
+let shownId = null, paneBack = null, ctxCache = null; // ctxCache: prefetched Reply context for the open person
 const usePane = () => WIDE.matches;
 function closeView() {
   if ($('view').open) $('view').close();
   if (!$('pane').hidden) { $('pane').hidden = true; $('pane').replaceChildren(); document.querySelector('.ct-body').classList.remove('has-pane'); }
   if (paneBack) { paneBack.release(); paneBack = null; }
+  ctxCache = null;
   for (const r of document.querySelectorAll('.ct-row[aria-current]')) r.removeAttribute('aria-current');
   shownId = null;
 }
@@ -132,7 +133,10 @@ function markRow(id) {
 $('view').addEventListener('close', () => { if ($('pane').hidden) shownId = null; });
 WIDE.addEventListener('change', () => { const id = shownId; if (id) { closeView(); openContact(id); } });
 async function openContact(id) {
+  // The Reply context is fetched alongside the person, so the Reply tap can open the draft synchronously (user activation).
+  const ctx = api('api/contacts/' + id + '/context').catch(() => null);
   let p; try { p = (await api('api/contacts/' + id)).contact; } catch (e) { say(e.message, 'error'); return; }
+  ctxCache = null; ctx.then(c => { if (shownId === id && c) ctxCache = c; });
   const pane = usePane();
   if (!pane && !$('pane').hidden) closeView();
   const d = pane ? $('pane') : $('view'); d.replaceChildren();
@@ -161,12 +165,27 @@ async function openContact(id) {
   const edit = el('button', 'wz-button', 'Edit'); edit.type = 'button'; edit.onclick = () => editContact(p);
   const merge = el('button', 'wz-button secondary', 'Merge…'); merge.type = 'button'; merge.onclick = () => pickMerge(p);
   const share = el('button', 'wz-button secondary', 'Share'); share.type = 'button'; share.onclick = () => shareCard(p, false);
-  bar.append(edit, share, merge); d.append(bar);
+  bar.append(edit);
+  // Reply: a fresh, unsent Chats draft with this person attached. Shown only where the shell offers it.
+  if (typeof window.WizardApp?.nav?.openContextDraft === 'function') {
+    const reply = el('button', 'wz-button secondary', 'Reply'); reply.type = 'button'; reply.dataset.act = 'reply'; reply.onclick = () => replyTo(p.id); bar.append(reply);
+  }
+  bar.append(share, merge); d.append(bar);
   shownId = p.id;
   if (pane) {
     d.hidden = false; d.scrollTop = 0; document.querySelector('.ct-body').classList.add('has-pane'); markRow(p.id);
     if (!paneBack && window.WizardApp?.back?.push) { try { paneBack = WizardApp.back.push(() => { closeView(); return true; }); } catch (e) { /* standalone */ } }
   } else WzSheet.open(d);
+}
+function replyTo(id) {
+  try {
+    if (!ctxCache || ctxCache.id !== id) throw new Error('Still loading this person. Try again in a second.');
+    const receipt = WizardApp.nav.openContextDraft(ctxCache);
+    if (receipt?.kind !== 'unsent-draft' || receipt.sent !== false) throw new Error('Could not confirm an unsent draft. Nothing was sent.');
+    say('Draft opened in Chats with this person attached. Nothing sent.', 'note');
+  } catch (e) {
+    say(e.message === 'Context draft unavailable' ? 'Reload Wizard (refresh the whole page) to turn on Reply. Nothing sent.' : (e.message || 'Could not open Chats. Nothing sent.'), 'error');
+  }
 }
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('pane').hidden && !document.querySelector('dialog[open]')) closeView(); });
 
@@ -405,7 +424,7 @@ async function phoneSync() {
 if (!window.WizardApp || WizardApp.version !== 1) {
   say('Wizard system functions are unavailable. Open Contacts through Wizard.', 'error');
 } else {
-  WizardApp.ready({name: 'contacts', version: '0.4.0'});
+  WizardApp.ready({name: 'contacts', version: '0.4.1'});
   WizardApp.back.register({canGoBack: () => false, back: () => false});
 }
 load();
