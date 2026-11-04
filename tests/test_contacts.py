@@ -209,6 +209,7 @@ class ContactsTests(unittest.TestCase):
         self.assertIn('Phone (mobile):', m)
         self.assertTrue(m.split('Notes: ', 1)[1].split('\n', 1)[0].endswith('...'), 'long notes are truncated')
         self.assertLess(len(m), 32000)
+        self.assertRegex(m, r'Last changed: \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC')
         with self.assertRaises(s.Problem):
             s.context('c_000000000000')
 
