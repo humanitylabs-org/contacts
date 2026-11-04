@@ -22,7 +22,7 @@ from xml.sax.saxutils import escape as xml_escape
 ROOT = Path(__file__).resolve().parent.parent if '__file__' in globals() else Path(os.environ.get('APP_ROOT', '.')).resolve()
 DATA = Path(os.environ.get('DATA_DIR', ROOT / '.data'))
 APP_ID = 'contacts'
-VERSION = '0.4.0'
+VERSION = '0.4.1'
 STATIC_TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml'}
 NETWORK = re.compile(r'[a-z][a-z0-9_-]{0,30}')
 PHOTO_MAX = 400 * 1024
@@ -208,6 +208,33 @@ def get_contact(contact_id):
     finally:
         c.close()
 
+
+def context(contact_id):
+    """One person as reference data for a Chats draft (Reply). The app never sends anything."""
+    p = get_contact(contact_id)['contact']
+    net = {'facebook': 'Messenger', 'twitter': 'X', 'gmessages': 'SMS', 'linkedin': 'LinkedIn', 'whatsapp': 'WhatsApp', 'line': 'LINE',
+           'wizard': 'Wizard Messenger', 'private': 'Wizard Messenger'}
+    lines = [f"Contacts person: {p['name']} (id {p['id']} in Contacts" + (', favourite' if p['favorite'] else '') + ')']
+    if p['nickname']:
+        lines.append(f"Nickname: {p['nickname']}")
+    work = ', '.join(x for x in (p['title'], p['company']) if x)
+    if work:
+        lines.append(f'Work: {work}')
+    for x in p['phones']:
+        lines.append(f"Phone ({x['label'] or 'phone'}): {x['value']}")
+    for x in p['emails']:
+        lines.append(f"Email ({x['label'] or 'email'}): {x['value']}")
+    for x in p['accounts']:
+        name = net.get(x['network'], x['network'].capitalize())
+        lines.append(f"{name}: {x['value']}" + (f" ({x['label']})" if x['label'] and x['label'] != x['value'] else ''))
+    if p['birthday']:
+        lines.append(f"Birthday: {p['birthday']}" + (' (year not known)' if p['birthday'].startswith('--') else ''))
+    if p['notes']:
+        notes = p['notes'].strip()
+        lines.append('Notes: ' + (notes if len(notes) <= 1500 else notes[:1500].rstrip() + '...'))
+    lines.append(f"Last changed: {p['updated']}")
+    lines.append(f"Read or change this person with the Contacts tools (contacts_get / contacts_update, id {p['id']}).")
+    return {'id': p['id'], 'title': f"Contacts: {p['name']}"[:200], 'message': '\n'.join(lines)[:32000]}
 
 def write_fields(c, contact_id, fields, replace=True):
     for kind, rows in fields.items():
@@ -1129,6 +1156,8 @@ class Handler(BaseHTTPRequestHandler):
             cid, rest = contact_route(path)
             if cid and rest == []:
                 return self.send(200, get_contact(cid))
+            if cid and rest == ['context']:
+                return self.send(200, context(cid))
             if cid and rest == ['card.vcf']:
                 c = connect()
                 try:
