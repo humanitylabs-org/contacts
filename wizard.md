@@ -4,7 +4,7 @@ id: contacts
 name: Contacts
 type: view
 category: app
-version: 0.4.2
+version: 0.4.3
 summary: One private contact list for Messenger, email and every app.
 license: GPL-3.0-only
 source: https://github.com/oscarhenrycollins/contacts
@@ -34,6 +34,9 @@ system: false
 uses: []
 needs: []
 health: /healthz
+switches:
+  contract: wizard.app-switches/1
+  path: /api/switches
 ---
 
 # Contacts
