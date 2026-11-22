@@ -7,11 +7,13 @@ Stdlib only. The host gateway owns authentication; direct ports stay loopback.
 import base64
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import re
 import secrets
 import sqlite3
+import threading
 import time
 import unicodedata
 from datetime import datetime, timezone
@@ -723,7 +725,8 @@ def _hash(password, salt):
 
 
 def sync_status():
-    return {'enabled': bool(kv_get('dav_hash')), 'username': DAV_USER, 'last_sync': int(kv_get('dav_seen', '0')) or None}
+    return {'enabled': bool(kv_get('dav_hash')), 'username': DAV_USER, 'last_sync': int(kv_get('dav_seen', '0')) or None,
+            'radicale': rad_status()}
 
 
 def sync_setup(server):
@@ -798,6 +801,210 @@ def mobileconfig(token):
 </dict></plist>
 """
     return plist.encode()
+
+
+# --- Contacts on Radicale (humanitylabs-org/wizard-calendar#61) ---
+# Calendar bundles a stock Radicale server. When the owner turns Calendar's `radicale` switch on, this address book is
+# kept there too (Calendar's /service/dav/, reached with Contacts' grant from the App Manager: wizard.md `uses:
+# [wizard-calendar]`), so a phone that adds Calendar's phone sync account sees the same contacts. SQLite stays this
+# app's working copy (screens, lookups and the agent tools are unchanged) and a full mirror: each change here is
+# pushed, each change made on the phone is pulled within RAD_INTERVAL seconds. Calendar's switch decides for both apps:
+# every answer says X-Wizard-Radicale: on|off; when it turns off Contacts pulls the last changes once (Calendar still
+# lets it read) and stops, so switching off loses nothing. Without Calendar or its grant nothing changes here.
+RAD_APP = 'wizard-calendar'
+RAD_INTERVAL = max(2, int(os.environ.get('CONTACTS_RADICALE_INTERVAL', '20')))
+GRANTS_FILE = os.environ.get('WIZARD_GRANTS_FILE', '/wizard/grants.json')
+_rad_lock = threading.Lock()
+_rad_kick = threading.Event()
+_RAD_NAME = re.compile(r'[A-Za-z0-9@._+-]{1,200}\.vcf')
+
+
+class RadError(Exception):
+    pass
+
+
+def rad_link():
+    """(host, port, grant) for Calendar's /service/dav/, or None. Re-read each time: the App Manager rotates grants."""
+    try:
+        with open(GRANTS_FILE, 'rb') as f:
+            raw = f.read(262145)
+        doc = json.loads(raw) if len(raw) <= 262144 else {}
+        key = (doc.get('outgoing') or {}).get(RAD_APP)
+        base = (doc.get('provider_endpoints') or {}).get(RAD_APP) or os.environ.get('CONTACTS_RADICALE_URL') or 'http://wizard-calendar:8799'
+        url = urlsplit(base)
+        if not isinstance(key, str) or not key or url.scheme != 'http' or not url.hostname or url.username or url.password:
+            return None
+        return url.hostname, url.port or 80, key
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def rad_request(link, method, name='', body=None, headers=None):
+    host, port, key = link
+    head = {'X-Wizard-Grant': key, **(headers or {})}
+    data = body.encode() if isinstance(body, str) else body
+    if data is not None:
+        head['Content-Length'] = str(len(data))
+    conn = http.client.HTTPConnection(host, port, timeout=15)
+    try:
+        conn.request(method, '/service/dav/' + quote(name), body=data, headers=head)
+        r = conn.getresponse()
+        out = r.read(32 * 1024 * 1024)
+        return r.status, {k.lower(): v for k, v in r.getheaders()}, out.decode('utf-8', 'replace')
+    except (OSError, http.client.HTTPException) as e:
+        raise RadError('Calendar is not reachable (%s)' % type(e).__name__) from None
+    finally:
+        conn.close()
+
+
+def _rad_state():
+    try:
+        st = json.loads(kv_get('rad_state') or '{}')
+    except ValueError:
+        st = {}
+    st = st if isinstance(st, dict) else {}
+    objects = st.get('objects') if isinstance(st.get('objects'), dict) else {}
+    return {'objects': {k: v for k, v in objects.items() if isinstance(v, dict) and isinstance(v.get('href'), str)},
+            'ctag': st.get('ctag') or '', 'active': bool(st.get('active')), 'last': st.get('last'), 'error': st.get('error') or ''}
+
+
+def rad_status():
+    st = _rad_state()
+    return {'active': st['active'], 'linked': rad_link() is not None, 'last': st['last'], 'error': st['error'][:200]}
+
+
+def _rad_list(link):
+    import xml.etree.ElementTree as ET
+    q = ('<?xml version="1.0" encoding="utf-8"?><card:addressbook-query xmlns:d="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav">'
+         '<d:prop><d:getetag/><card:address-data/></d:prop></card:addressbook-query>')
+    status, _, body = rad_request(link, 'REPORT', '', q, {'Depth': '1', 'Content-Type': 'application/xml; charset=utf-8'})
+    if status != 207:
+        raise RadError('Calendar listing failed (%s)' % status)
+    ns = {'d': 'DAV:', 'card': 'urn:ietf:params:xml:ns:carddav'}
+    out = {}
+    for resp in ET.fromstring(body).findall('d:response', ns):
+        href = resp.findtext('d:href', '', ns)
+        name = unquote(href.rsplit('/', 1)[-1])
+        if href.endswith('/') or not _RAD_NAME.fullmatch(name):
+            continue
+        out[name] = (resp.findtext('.//d:getetag', '', ns), resp.findtext('.//card:address-data', '', ns))
+    return out
+
+
+def _rad_ctag(link):
+    import xml.etree.ElementTree as ET
+    q = ('<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/">'
+         '<d:prop><cs:getctag/></d:prop></d:propfind>')
+    status, head, body = rad_request(link, 'PROPFIND', '', q, {'Depth': '0', 'Content-Type': 'application/xml; charset=utf-8'})
+    if status == 404 and head.get('x-wizard-radicale') == 'off':
+        return None, False
+    if status != 207:
+        raise RadError('Calendar answered %s' % status)
+    node = ET.fromstring(body).find('.//{http://calendarserver.org/ns/}getctag')
+    return (node.text or '') if node is not None else '', head.get('x-wizard-radicale') == 'on'
+
+
+def _rad_pull(link, st):
+    objects = st['objects']
+    server = _rad_list(link)
+    known = {v['href'] for v in objects.values()}
+    if len(known) >= 3 and not known & set(server):
+        # None of our cards is there any more: the server's data was reset (a phone deletes one by one).
+        # Keep every contact and copy them across again.
+        objects.clear()
+        _rad_push(link, st)
+        server = _rad_list(link)
+    by_href = {v['href']: cid for cid, v in objects.items()}
+    for name, (etag, text) in server.items():
+        cid = by_href.get(name)
+        if cid and objects[cid].get('etag') == etag:
+            continue
+        try:
+            dav_put(name, text)
+        except Problem:
+            continue  # not a card Contacts can read: left alone on the server
+        c = connect()
+        try:
+            row = card_by_href(c, name)
+        finally:
+            c.close()
+        if row:
+            if cid and cid != row['id']:
+                objects.pop(cid, None)
+            objects[row['id']] = {'href': name, 'etag': etag, 'rev': row['updated']}
+    for cid in [cid for cid, v in objects.items() if v['href'] not in server]:
+        objects.pop(cid)
+        try:
+            delete_contact(cid)  # deleted on the phone
+        except Problem:
+            pass
+
+
+def _rad_push(link, st):
+    objects = st['objects']
+    c = connect()
+    try:
+        rows = c.execute('SELECT * FROM contact').fetchall()
+        cards = {r['id']: (r, card_text(c, r)) for r in rows}
+    finally:
+        c.close()
+    for cid, (row, text) in cards.items():
+        known = objects.get(cid)
+        if known and known.get('rev') == row['updated']:
+            continue
+        name = known['href'] if known else card_href(row)
+        head = {'Content-Type': 'text/vcard; charset=utf-8'}
+        if known and known.get('etag'):
+            head['If-Match'] = known['etag']
+        elif not known:
+            head['If-None-Match'] = '*'
+        status, h, _ = rad_request(link, 'PUT', name, text, head)
+        if status in (200, 201, 204):
+            objects[cid] = {'href': name, 'etag': h.get('etag', ''), 'rev': row['updated']}
+        elif status == 412:
+            objects[cid] = {'href': name, 'etag': '', 'rev': row['updated']}  # changed on the phone too: its copy wins
+        else:
+            raise RadError('Calendar refused a card (%s)' % status)
+    for cid in [cid for cid in objects if cid not in cards]:
+        status, _, _ = rad_request(link, 'DELETE', objects[cid]['href'], None, {'If-Match': objects[cid]['etag']} if objects[cid].get('etag') else {})
+        if status in (200, 204, 404):
+            objects.pop(cid)
+
+
+def rad_sync():
+    """One round: push this app's changes, pull the phone's. Returns the state. Never raises."""
+    with _rad_lock:
+        st = _rad_state()
+        link = rad_link()
+        try:
+            if link is None:
+                st.update(active=False, error='')
+                return st
+            ctag, on = _rad_ctag(link)
+            if not on:
+                if st['active']:
+                    # Calendar's switch just went off: take the last phone changes back (read-only), then stop.
+                    _rad_pull(link, st)
+                st.update(active=False, error='')
+                return st
+            _rad_push(link, st)
+            ctag, _ = _rad_ctag(link)
+            if ctag != st['ctag'] or not st['active']:
+                _rad_pull(link, st)
+                st['ctag'] = ctag
+            st.update(active=True, last=now(), error='')
+        except (RadError, ValueError, OSError) as e:
+            st['error'] = str(e)[:200]
+        finally:
+            kv_put('rad_state', json.dumps(st))
+        return st
+
+
+def _rad_loop():
+    while True:
+        _rad_kick.wait(RAD_INTERVAL)
+        _rad_kick.clear()
+        rad_sync()
 
 
 def book_ctag(c):
@@ -1391,6 +1598,22 @@ def wizard_switches_install(handler_cls):
 wizard_switches_install(Handler)
 
 
+def _rad_kick_after(handler_cls):
+    """Any change (POST, phone PUT / DELETE) is pushed to Radicale at once instead of on the next timer."""
+    for method in ('do_POST', 'do_PUT', 'do_DELETE'):
+        orig = getattr(handler_cls, method)
+
+        def wrapped(self, _orig=orig):
+            try:
+                return _orig(self)
+            finally:
+                _rad_kick.set()
+        setattr(handler_cls, method, wrapped)
+
+
+_rad_kick_after(Handler)
+
+
 if __name__ == '__main__':
     connect().close()
     for f in DATA.glob('contacts.sqlite3*'):
@@ -1398,4 +1621,5 @@ if __name__ == '__main__':
             f.chmod(0o600)
         except OSError:
             pass
+    threading.Thread(target=_rad_loop, name='radicale-sync', daemon=True).start()
     ThreadingHTTPServer((os.environ.get('BIND', '0.0.0.0'), int(os.environ.get('PORT', '8799'))), Handler).serve_forever()

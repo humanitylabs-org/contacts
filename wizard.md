@@ -31,7 +31,7 @@ view:
 provides:
 - contacts
 system: false
-uses: []
+uses: [wizard-calendar]   # Calendar's Radicale server keeps the address book for phones when its radicale switch is on
 needs: []
 health: /healthz
 switches:
@@ -41,4 +41,4 @@ switches:
 
 # Contacts
 
-One private address book on your Wizard. People, their phones, emails and their account on each network (WhatsApp, Telegram, Instagram, email and more), a photo and notes. Messenger adds people with "Add to Contacts" and shows their contact name; any app with an approved link to Contacts can look people up. Import and export vCard (.vcf), review suggested duplicates without automatic merges, share a contact or network link by QR code, and opt in to CardDAV phone sync. Keep iCloud enabled until phone sync has been confirmed on the device.
+One private address book on your Wizard. People, their phones, emails and their account on each network (WhatsApp, Telegram, Instagram, email and more), a photo and notes. Messenger adds people with "Add to Contacts" and shows their contact name; any app with an approved link to Contacts can look people up. Import and export vCard (.vcf), review suggested duplicates without automatic merges, share a contact or network link by QR code, and opt in to CardDAV phone sync. Keep iCloud enabled until phone sync has been confirmed on the device. When Calendar's `radicale` switch is on, the address book is also kept on Calendar's Radicale server (CalDAV + CardDAV in one phone account); this app's list stays the working copy and a full mirror, so switching it off loses nothing.

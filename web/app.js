@@ -416,6 +416,9 @@ async function phoneSync() {
       setTimeout(() => { pass.textContent = 'Password hidden; replace it to see a new one.'; }, 60000);
     } catch (e) { say(e.message, 'error'); }
   };
+  // Calendar's Radicale server (humanitylabs-org/wizard-calendar#61): with Calendar's switch on, these contacts are kept
+  // there too, so the phone sync account made in Calendar carries them as well.
+  if (state.radicale && state.radicale.active) d.append(el('p', 'ct-help', 'Your contacts are also kept on your Wizard’s calendar server. One phone account for calendar and contacts: Calendar > Settings > Phone sync.'));
   const secret = el('div', 'ct-sync-secret'); d.append(setup, secret);
   if (state.enabled) { const off = el('button', 'wz-button secondary', 'Turn off sync'); off.type = 'button'; off.onclick = async () => { if (!off.dataset.confirm) { off.dataset.confirm = '1'; off.textContent = 'Tap again to stop phone sync'; return; } try { await api('api/sync/off', {}); d.close(); phoneSync(); } catch (e) { say(e.message, 'error'); } }; d.append(off); }
   WzSheet.open(d);
