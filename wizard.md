@@ -6,6 +6,7 @@ type: view
 category: app
 version: 0.4.4
 summary: One private contact list for Messenger, email and every app.
+personal_data: reads your contacts   # holds the owner's personal data (wizard-os spec/WIZARD_MD.md "Personal data"); a label only
 license: GPL-3.0-only
 source: https://github.com/oscarhenrycollins/contacts
 runtime:
